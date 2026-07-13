@@ -1,0 +1,583 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="TerraChat：为 tModLoader 多人游戏打造的社交式聊天记录界面。">
+  <meta name="theme-color" content="#04101f">
+  <title>TerraChat｜多人聊天界面模组</title>
+  <link rel="icon" type="image/png" href="icon.png">
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #030813;
+      --panel: rgba(10, 22, 40, .78);
+      --panel-strong: rgba(8, 18, 34, .94);
+      --line: rgba(121, 191, 255, .18);
+      --line-strong: rgba(132, 206, 255, .36);
+      --text: #f3f8ff;
+      --muted: #9eb1c8;
+      --blue: #78c9ff;
+      --cyan: #89f0ff;
+      --teal: #79e2d0;
+      --gold: #f0cf8a;
+      --danger: #f05d68;
+      --radius: 8px;
+      --shadow: 0 24px 70px rgba(0, 0, 0, .42);
+      --max-width: 1160px;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-width: 320px;
+      color: var(--text);
+      font-family: "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.7;
+      background:
+        linear-gradient(116deg, rgba(66, 166, 255, .14), transparent 34%),
+        linear-gradient(244deg, rgba(121, 226, 208, .08), transparent 38%),
+        linear-gradient(180deg, #04101f 0%, var(--bg) 38%, #02060d 100%);
+      background-attachment: fixed;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      z-index: -1;
+      pointer-events: none;
+      opacity: .34;
+      background:
+        linear-gradient(90deg, rgba(255,255,255,.018) 0 1px, transparent 1px 120px),
+        linear-gradient(180deg, rgba(255,255,255,.014) 0 1px, transparent 1px 120px),
+        repeating-linear-gradient(0deg, transparent 0 31px, rgba(115,217,255,.018) 31px 32px, transparent 32px 96px),
+        linear-gradient(rgba(137,240,255,.035) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(121,226,208,.028) 1px, transparent 1px);
+      background-size: 120px 120px, 120px 120px, auto, 3px 3px, 3px 3px;
+    }
+
+    .shell { width: min(var(--max-width), calc(100% - 32px)); margin: 0 auto; }
+
+    header {
+      min-height: 76px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      border-bottom: 1px solid rgba(132, 206, 255, .13);
+    }
+
+    .brand { display: flex; align-items: center; gap: 14px; }
+
+    .brand img {
+      width: 46px;
+      height: 46px;
+      padding: 4px;
+      object-fit: contain;
+      border: 1px solid rgba(120, 201, 255, .56);
+      border-radius: var(--radius);
+      background: linear-gradient(180deg, rgba(255,255,255,.09), transparent 72%), rgba(11,23,42,.95);
+      box-shadow: 0 0 0 3px rgba(74,151,255,.1), 0 0 24px rgba(66,166,255,.18);
+    }
+
+    .brand strong { display: block; font-size: 20px; line-height: 1.05; }
+    .brand span { display: block; margin-top: 4px; color: var(--muted); font-size: 12px; }
+    .lang-toggle {
+      display: inline-flex;
+      overflow: hidden;
+      border: 1px solid rgba(132,206,255,.24);
+      border-radius: 7px;
+      background: rgba(5,14,27,.88);
+      box-shadow: 0 10px 26px rgba(0,0,0,.2);
+    }
+
+    .lang-button {
+      min-width: 54px;
+      height: 36px;
+      padding: 0 12px;
+      border: 0;
+      border-right: 1px solid rgba(132,206,255,.14);
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      background: transparent;
+      cursor: pointer;
+      transition: color .16s ease, background .16s ease, box-shadow .16s ease;
+    }
+
+    .lang-button:last-child { border-right: 0; }
+    .lang-button:hover { color: #fff; background: rgba(120,201,255,.1); }
+    .lang-button.active { color: #fff; background: rgba(66,166,255,.2); box-shadow: inset 0 0 0 1px rgba(132,206,255,.14); }
+    .lang-button:focus-visible { outline: 2px solid var(--cyan); outline-offset: -2px; }
+
+    kbd {
+      min-width: 34px;
+      height: 32px;
+      padding: 0 10px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid rgba(137,240,255,.34);
+      border-bottom-color: rgba(137,240,255,.62);
+      border-radius: 5px;
+      color: #ebfbff;
+      font-family: inherit;
+      font-weight: 800;
+      background: rgba(5,14,27,.9);
+      box-shadow: inset 0 -2px 0 rgba(137,240,255,.08);
+    }
+
+    main { padding: 30px 0 50px; }
+
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: linear-gradient(180deg, rgba(255,255,255,.045), transparent 220px), var(--panel);
+      box-shadow: var(--shadow);
+    }
+
+    .hero {
+      position: relative;
+      overflow: hidden;
+      min-height: 520px;
+      padding: 50px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(360px, .88fr);
+      align-items: center;
+      gap: 42px;
+    }
+
+    .hero::before {
+      content: "";
+      position: absolute;
+      width: 430px;
+      height: 430px;
+      right: -150px;
+      top: -180px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(66,166,255,.2), transparent 68%);
+      pointer-events: none;
+    }
+
+    .author-credit {
+	      width: max-content;
+	      max-width: 100%;
+	      margin-bottom: 28px;
+	      padding: 8px 13px;
+	      display: flex;
+	      align-items: center;
+	      gap: 8px;
+	      border: 1px solid rgba(121,226,208,.3);
+	      border-left: 3px solid var(--teal);
+	      border-radius: 5px;
+	      color: var(--muted);
+	      font-size: 13px;
+	      letter-spacing: .02em;
+	      background: linear-gradient(90deg, rgba(121,226,208,.11), rgba(66,166,255,.035));
+	      box-shadow: 0 10px 26px rgba(0,0,0,.18), inset 0 0 18px rgba(121,226,208,.025);
+	    }
+
+	    .author-credit span { color: #aebed0; }
+	    .author-credit strong { color: var(--gold); font-size: 14px; text-shadow: 0 0 18px rgba(240,207,138,.22); }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--cyan);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: .13em;
+      text-transform: uppercase;
+    }
+
+    .eyebrow::before { content: ""; width: 26px; height: 1px; background: currentColor; box-shadow: 0 0 12px currentColor; }
+
+    h1 {
+      margin: 15px 0 19px;
+      font-size: clamp(44px, 6vw, 72px);
+      line-height: 1;
+      letter-spacing: -.04em;
+      color: transparent;
+      background: linear-gradient(105deg, #fff 4%, var(--blue) 48%, var(--teal));
+      background-clip: text;
+      -webkit-background-clip: text;
+    }
+
+    .hero-copy { max-width: 570px; margin: 0; color: #b9c9da; font-size: 16px; }
+    .tags { margin-top: 25px; display: flex; flex-wrap: wrap; gap: 8px; }
+
+    .tag {
+      padding: 7px 11px;
+      border: 1px solid rgba(132,206,255,.2);
+      border-radius: 999px;
+      color: #d9ebff;
+      font-size: 12px;
+      background: rgba(66,166,255,.07);
+    }
+
+    .chat-demo {
+      position: relative;
+      padding: 17px;
+      border: 1px solid rgba(132,206,255,.34);
+      border-radius: 10px;
+      background: rgba(3,8,17,.84);
+      box-shadow: 0 30px 70px rgba(0,0,0,.38), 0 0 44px rgba(66,166,255,.1);
+      transform: perspective(900px) rotateY(-3deg) rotateX(1deg);
+    }
+
+    .demo-head { padding-bottom: 11px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); }
+    .demo-title { display: flex; align-items: center; gap: 9px; font-size: 13px; font-weight: 700; }
+
+    .avatar {
+      width: 38px;
+      height: 38px;
+      display: grid;
+      place-items: center;
+      flex: 0 0 auto;
+      border: 2px solid #05080d;
+      border-radius: 50%;
+      color: #06101c;
+      font-size: 11px;
+      font-weight: 900;
+      background: linear-gradient(135deg, var(--blue), var(--teal));
+      box-shadow: 0 0 0 1px rgba(137,240,255,.2);
+    }
+
+    .demo-close { color: #ef7580; font-size: 20px; }
+    .messages { min-height: 245px; padding: 18px 1px 8px; display: grid; align-content: end; gap: 15px; }
+    .message { display: flex; align-items: flex-end; gap: 8px; }
+    .message.mine { justify-content: flex-end; }
+    .message-stack { max-width: 72%; }
+    .message-name { margin: 0 0 4px; color: var(--blue); font-size: 10px; }
+    .mine .message-name { color: var(--gold); text-align: right; }
+
+    .bubble {
+      padding: 9px 11px 6px;
+      border: 1px solid rgba(92,122,168,.72);
+      border-radius: 3px;
+      color: #f4f7fb;
+      font-size: 13px;
+      background: rgba(7,10,18,.9);
+    }
+
+    .mine .bubble { border-color: rgba(84,150,128,.76); background: rgba(6,18,15,.88); }
+    .time { display: block; margin-top: 5px; color: #7f8997; font-size: 8px; text-align: right; }
+    .demo-input { min-height: 62px; padding: 10px; border: 1px solid rgba(92,110,142,.55); color: #7f8a99; font-size: 12px; background: rgba(2,6,13,.78); }
+    .demo-send { width: 82px; margin: 9px 0 0 auto; padding: 5px 0; border: 1px solid rgba(132,206,255,.32); font-size: 12px; text-align: center; background: rgba(12,24,40,.84); }
+
+    .features { margin-top: 22px; padding: 36px; }
+    .section-head { margin-bottom: 23px; display: flex; align-items: end; justify-content: space-between; gap: 20px; }
+    .section-head h2 { margin: 7px 0 0; font-size: clamp(25px, 3vw, 36px); line-height: 1.2; }
+    .section-head p { max-width: 480px; margin: 0; color: var(--muted); font-size: 13px; text-align: right; }
+    .feature-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 13px; }
+
+    .feature {
+      min-height: 188px;
+      padding: 21px;
+      border: 1px solid rgba(132,206,255,.14);
+      border-radius: var(--radius);
+      background: linear-gradient(145deg, rgba(66,166,255,.075), transparent 58%), rgba(5,13,25,.7);
+    }
+
+    .feature-icon {
+      width: 38px;
+      height: 38px;
+      margin-bottom: 16px;
+      display: grid;
+      place-items: center;
+      border: 1px solid rgba(137,240,255,.26);
+      border-radius: 7px;
+      color: var(--cyan);
+      font-size: 17px;
+      font-weight: 800;
+      background: rgba(66,166,255,.09);
+    }
+
+    .feature h3 { margin: 0 0 7px; font-size: 16px; }
+    .feature p { margin: 0; color: var(--muted); font-size: 13px; }
+
+    .details { margin-top: 22px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px; }
+    .detail { padding: 34px; }
+    .detail h2 { margin: 8px 0 13px; font-size: 28px; line-height: 1.25; }
+    .detail > p { margin: 0; color: var(--muted); font-size: 14px; }
+    .check-list { margin: 21px 0 0; padding: 0; display: grid; gap: 11px; list-style: none; }
+    .check-list li { position: relative; padding-left: 26px; color: #d6e3f1; font-size: 13px; }
+    .check-list li::before { content: ""; position: absolute; left: 0; top: .62em; width: 13px; height: 7px; border-left: 2px solid var(--teal); border-bottom: 2px solid var(--teal); transform: rotate(-45deg); }
+
+    .history {
+      margin-top: 22px;
+      padding: 34px;
+      display: grid;
+      grid-template-columns: .9fr 1.6fr;
+      gap: 32px;
+      align-items: center;
+    }
+
+    .history h2 { margin: 8px 0 12px; font-size: 30px; line-height: 1.25; }
+    .history-copy { margin: 0; color: var(--muted); font-size: 14px; }
+    .history-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+    .history-item { padding: 14px; border: 1px solid var(--line); background: rgba(3,10,20,.64); }
+    .history-item strong { display: block; color: #e9f6ff; font-size: 14px; }
+    .history-item span { color: var(--muted); font-size: 11px; }
+
+    .usage {
+      margin-top: 22px;
+      padding: 25px 30px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+      border-color: rgba(121,226,208,.24);
+      background: linear-gradient(90deg, rgba(121,226,208,.08), transparent 55%), var(--panel-strong);
+    }
+
+    .usage strong { display: block; font-size: 18px; }
+    .usage span { color: var(--muted); font-size: 12px; }
+    .usage-steps { display: flex; align-items: center; gap: 9px; color: #cfe1ef; font-size: 13px; }
+    .arrow { color: var(--cyan); }
+
+    footer { padding: 27px 0 36px; color: #75879b; font-size: 12px; text-align: center; }
+
+    @media (max-width: 940px) {
+      .hero { padding: 38px; grid-template-columns: 1fr; }
+      .chat-demo { max-width: 620px; transform: none; }
+      .feature-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .history { grid-template-columns: 1fr; }
+    }
+
+    @media (max-width: 680px) {
+      .shell { width: min(100% - 20px, var(--max-width)); }
+      header { min-height: 68px; }
+      .brand img { width: 40px; height: 40px; }
+      .brand strong { font-size: 18px; }
+      .brand span { display: none; }
+      .lang-button { min-width: 48px; padding: 0 9px; }
+      main { padding-top: 18px; }
+	      .hero { min-height: 0; padding: 28px 20px; gap: 30px; }
+	      .author-credit { margin-bottom: 22px; }
+	      .hero .eyebrow { font-size: 10px; letter-spacing: .06em; overflow-wrap: anywhere; }
+	      h1 { font-size: 40px; overflow-wrap: anywhere; }
+      .features, .detail, .history { padding: 25px 20px; }
+      .section-head { display: block; }
+      .section-head p { margin-top: 9px; text-align: left; }
+      .feature-grid, .details { grid-template-columns: 1fr; }
+      .feature { min-height: 0; }
+      .history-grid { grid-template-columns: 1fr; }
+      .usage { align-items: flex-start; flex-direction: column; }
+      .usage-steps { flex-wrap: wrap; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <div class="brand">
+        <img src="icon.png" alt="TerraChat 图标">
+        <div><strong>TerraChat</strong><span data-i18n="brand.subtitle">tModLoader 多人聊天界面</span></div>
+      </div>
+      <div class="lang-toggle" role="group" aria-label="语言切换">
+        <button class="lang-button active" type="button" data-lang="zh" aria-pressed="true">中文</button>
+        <button class="lang-button" type="button" data-lang="en" aria-pressed="false">EN</button>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero panel">
+        <div>
+	          <div class="author-credit" data-i18n="author"><span>作者</span><strong>热锅上的蚂蚁</strong></div>
+          <span class="eyebrow">Multiplayer Chat Interface</span>
+          <h1 data-i18n="hero.title">让 Terraria 聊天<br>更像社交软件</h1>
+          <p class="hero-copy" data-i18n="hero.copy">TerraChat 为多人游戏提供独立的聊天记录面板。它保留原版消息发送方式，只整理真实玩家发送的内容，并用头像、资料名、时间与左右气泡重新呈现。</p>
+          <div class="tags">
+            <span class="tag" data-i18n="tag.filter">玩家消息过滤</span>
+            <span class="tag" data-i18n="tag.input">中文输入优化</span>
+            <span class="tag" data-i18n="tag.avatar">圆形自定义头像</span>
+            <span class="tag" data-i18n="tag.sync">多人资料同步</span>
+          </div>
+        </div>
+
+        <div class="chat-demo" aria-label="TerraChat 聊天界面示意">
+          <div class="demo-head"><div class="demo-title"><span class="avatar">TC</span><span data-i18n="demo.title">聊天记录</span></div><span class="demo-close">×</span></div>
+          <div class="messages">
+            <div class="message">
+              <span class="avatar">A</span>
+              <div class="message-stack"><p class="message-name" data-i18n="demo.otherName">旅行者（角色名）</p><div class="bubble"><span data-i18n="demo.otherMessage">今晚一起挑战 Boss 吗？</span><span class="time">2030-07-13 20:18</span></div></div>
+            </div>
+            <div class="message mine">
+              <div class="message-stack"><p class="message-name" data-i18n="demo.myName">本人</p><div class="bubble"><span data-i18n="demo.myMessage">可以，我整理一下装备。</span><span class="time">2030-07-13 20:18</span></div></div>
+              <span class="avatar" data-i18n="demo.me">我</span>
+            </div>
+          </div>
+          <div class="demo-input" data-i18n="demo.input">输入消息，按 Enter 发送</div>
+          <div class="demo-send" data-i18n="demo.send">发送</div>
+        </div>
+      </section>
+
+      <section class="features panel">
+        <div class="section-head">
+          <div><span class="eyebrow">Core Features</span><h2 data-i18n="features.title">专注于玩家之间的聊天</h2></div>
+          <p data-i18n="features.copy">系统提示、世界事件和其他非玩家消息不会进入 TerraChat，记录内容保持干净。</p>
+        </div>
+        <div class="feature-grid">
+          <article class="feature"><div class="feature-icon">◈</div><h3 data-i18n="feature.ui.title">社交式聊天 UI</h3><p data-i18n="feature.ui.copy">本人消息在右，其他玩家在左；头像、名称、正文和时间清晰分层。</p></article>
+          <article class="feature"><div class="feature-icon">⌨</div><h3 data-i18n="feature.input.title">输入法优化</h3><p data-i18n="feature.input.copy">支持中文候选框、光标、文本选择、长按退格与常用 Ctrl 快捷键。</p></article>
+          <article class="feature"><div class="feature-icon">◎</div><h3 data-i18n="feature.avatar.title">本地图片头像</h3><p data-i18n="feature.avatar.copy">选择电脑图片，拖动位置、滚轮缩放并裁切成统一规格的圆形头像。</p></article>
+          <article class="feature"><div class="feature-icon">◇</div><h3 data-i18n="feature.profile.title">玩家资料卡</h3><p data-i18n="feature.profile.copy">设置资料名和 200 字描述；资料名旁保留原角色名，避免认错玩家。</p></article>
+          <article class="feature"><div class="feature-icon">▣</div><h3 data-i18n="feature.history.title">聊天记录管理</h3><p data-i18n="feature.history.copy">最多保存 200 条，可删除单条消息，也可通过确认弹窗清空全部。</p></article>
+          <article class="feature"><div class="feature-icon">↻</div><h3 data-i18n="feature.sync.title">多人资料同步</h3><p data-i18n="feature.sync.copy">头像、资料名与描述会同步给其他 TerraChat 玩家，聊天时间由服务器统一。</p></article>
+        </div>
+      </section>
+
+      <div class="details">
+        <section class="detail panel">
+          <span class="eyebrow">Input Experience</span>
+          <h2 data-i18n="input.title">面板内直接输入与发送</h2>
+          <p data-i18n="input.copy">输入逻辑沿用经过反复调整的稳定规则，适合连续聊天和较长文本编辑。</p>
+          <ul class="check-list">
+            <li data-i18n="input.item1">Enter 发送，Shift+Enter 或 Ctrl+Enter 换行</li>
+            <li data-i18n="input.item2">Ctrl+A / C / X / V 全选、复制、剪切和粘贴文字</li>
+            <li data-i18n="input.item3">方向键、Home、End、Delete 与长按退格</li>
+            <li data-i18n="input.item4">点击输入框外取消焦点，快捷键不会误输入</li>
+          </ul>
+        </section>
+
+        <section class="detail panel">
+          <span class="eyebrow">Avatar & Profile</span>
+          <h2 data-i18n="profile.title">圆形头像与个人资料</h2>
+          <p data-i18n="profile.copy">点击顶部头像或聊天头像即可打开资料卡；自己的资料可编辑，其他玩家保持只读。</p>
+          <ul class="check-list">
+            <li data-i18n="profile.item1">GPU 实时裁切预览，拖动与缩放更加流畅</li>
+            <li data-i18n="profile.item2">统一头像规格与高清显示纹理</li>
+            <li data-i18n="profile.item3">文件选择器记住上次使用的图片目录</li>
+            <li data-i18n="profile.item4">资料名显示原角色名，描述最多 200 字</li>
+          </ul>
+        </section>
+      </div>
+
+      <section class="history panel">
+        <div>
+          <span class="eyebrow">History</span>
+          <h2 data-i18n="history.title">聊天记录跟随角色保存</h2>
+          <p class="history-copy" data-i18n="history.copy">退出地图或游戏后不会消失。不同角色分别保存自己的记录、资料名与个人描述。</p>
+        </div>
+        <div class="history-grid">
+          <div class="history-item"><strong data-i18n="history.playerOnly.title">仅玩家聊天</strong><span data-i18n="history.playerOnly.copy">自动过滤系统提示</span></div>
+          <div class="history-item"><strong data-i18n="history.scroll.title">平滑滚动</strong><span data-i18n="history.scroll.copy">滚轮与拖动滚动条</span></div>
+          <div class="history-item"><strong data-i18n="history.delete.title">单条或全部删除</strong><span data-i18n="history.delete.copy">清空操作带确认弹窗</span></div>
+          <div class="history-item"><strong data-i18n="history.time.title">服务器统一时间</strong><span data-i18n="history.time.copy">完整显示年月日与时分</span></div>
+        </div>
+      </section>
+
+      <section class="usage panel">
+        <div><strong data-i18n="usage.title">进入世界后，按 C 打开 TerraChat</strong><span data-i18n="usage.copy">快捷键可以在 tModLoader 的按键设置中重新绑定。</span></div>
+        <div class="usage-steps"><kbd>C</kbd><span class="arrow">→</span><span data-i18n="usage.step1">点击输入框</span><span class="arrow">→</span><span data-i18n="usage.step2">Enter 发送</span></div>
+      </section>
+    </main>
+
+    <footer data-i18n="footer">TerraChat · 为 Terraria 多人聊天提供更清晰、更稳定的社交式界面</footer>
+  </div>
+
+  <script>
+    (() => {
+      const storageKey = 'terrachat-language';
+      const english = {
+        'brand.subtitle': 'Multiplayer chat interface for tModLoader',
+	        'author': '<span>Author</span><strong>热锅上的蚂蚁</strong>',
+        'hero.title': 'Terraria Chat,<br>Made Social',
+        'hero.copy': 'TerraChat adds a dedicated multiplayer chat history panel. It keeps Terraria’s original message channel, records only messages sent by real players, and presents them with avatars, profile names, timestamps, and left/right chat bubbles.',
+        'tag.filter': 'Player-only messages',
+        'tag.input': 'IME-friendly input',
+        'tag.avatar': 'Circular custom avatars',
+        'tag.sync': 'Multiplayer profile sync',
+        'demo.title': 'Chat History',
+        'demo.otherName': 'Traveler (character name)',
+        'demo.otherMessage': 'Want to fight a boss tonight?',
+        'demo.myName': 'You',
+        'demo.myMessage': 'Sure. I’ll get my gear ready.',
+        'demo.me': 'ME',
+        'demo.input': 'Type a message and press Enter',
+        'demo.send': 'Send',
+        'features.title': 'Focused on player-to-player chat',
+        'features.copy': 'System notices, world events, and other non-player messages never enter TerraChat, keeping the history clean.',
+        'feature.ui.title': 'Social chat interface',
+        'feature.ui.copy': 'Your messages appear on the right and other players on the left, with clear layers for avatars, names, text, and time.',
+        'feature.input.title': 'Improved text input',
+        'feature.input.copy': 'Supports IME candidate windows, cursor movement, text selection, held Backspace, and common Ctrl shortcuts.',
+        'feature.avatar.title': 'Local image avatars',
+        'feature.avatar.copy': 'Choose an image from your computer, drag to reposition, zoom with the wheel, and crop it into a consistent circle.',
+        'feature.profile.title': 'Player profile cards',
+        'feature.profile.copy': 'Set a profile name and a 200-character bio. The original character name remains visible to prevent confusion.',
+        'feature.history.title': 'Chat history controls',
+        'feature.history.copy': 'Stores up to 200 messages. Delete individual entries or clear everything through a confirmation dialog.',
+        'feature.sync.title': 'Multiplayer profile sync',
+        'feature.sync.copy': 'Avatars, profile names, and bios sync with other TerraChat players, while chat timestamps use server time.',
+        'input.title': 'Type and send without leaving the panel',
+        'input.copy': 'The input behavior follows a carefully tuned rule set designed for continuous conversation and longer text editing.',
+        'input.item1': 'Enter to send; Shift+Enter or Ctrl+Enter for a new line',
+        'input.item2': 'Ctrl+A / C / X / V for select all, copy, cut, and text paste',
+        'input.item3': 'Arrow keys, Home, End, Delete, and held Backspace',
+        'input.item4': 'Click outside the input to release focus and prevent accidental typing',
+        'profile.title': 'Circular avatars and player profiles',
+        'profile.copy': 'Click the header avatar or any chat avatar to open a profile card. Your own profile is editable; other profiles are read-only.',
+        'profile.item1': 'GPU-rendered live crop preview for smooth dragging and zooming',
+        'profile.item2': 'Consistent avatar sizing with a high-resolution display texture',
+        'profile.item3': 'The file picker remembers the last image folder you used',
+        'profile.item4': 'Profile names show the original character name; bios support 200 characters',
+        'history.title': 'History saved with each character',
+        'history.copy': 'Messages remain after leaving a world or closing the game. Each character keeps separate history, profile name, and bio data.',
+        'history.playerOnly.title': 'Player chat only',
+        'history.playerOnly.copy': 'System notices are filtered automatically',
+        'history.scroll.title': 'Smooth scrolling',
+        'history.scroll.copy': 'Use the wheel or drag the scrollbar',
+        'history.delete.title': 'Delete one or clear all',
+        'history.delete.copy': 'Clearing history requires confirmation',
+        'history.time.title': 'Server-synchronized time',
+        'history.time.copy': 'Full date, hour, and minute display',
+        'usage.title': 'Enter a world and press C to open TerraChat',
+        'usage.copy': 'The hotkey can be rebound in the tModLoader control settings.',
+        'usage.step1': 'Click the input box',
+        'usage.step2': 'Press Enter to send',
+        'footer': 'TerraChat · A clearer, more reliable social chat interface for Terraria multiplayer'
+      };
+
+      const translatableElements = Array.from(document.querySelectorAll('[data-i18n]'));
+      translatableElements.forEach((element) => { element.dataset.zh = element.innerHTML; });
+
+      const setLanguage = (language) => {
+        const nextLanguage = language === 'en' ? 'en' : 'zh';
+        translatableElements.forEach((element) => {
+          const key = element.dataset.i18n;
+          element.innerHTML = nextLanguage === 'en' && english[key] ? english[key] : element.dataset.zh;
+        });
+
+        document.documentElement.lang = nextLanguage === 'en' ? 'en' : 'zh-CN';
+        document.title = nextLanguage === 'en' ? 'TerraChat | Multiplayer Chat Interface Mod' : 'TerraChat｜多人聊天界面模组';
+        document.querySelector('meta[name="description"]').content = nextLanguage === 'en'
+          ? 'TerraChat: a social-style multiplayer chat history interface for tModLoader.'
+          : 'TerraChat：为 tModLoader 多人游戏打造的社交式聊天记录界面。';
+        document.querySelector('.brand img').alt = nextLanguage === 'en' ? 'TerraChat icon' : 'TerraChat 图标';
+        document.querySelector('.lang-toggle').setAttribute('aria-label', nextLanguage === 'en' ? 'Language switch' : '语言切换');
+
+        document.querySelectorAll('.lang-button').forEach((button) => {
+          const active = button.dataset.lang === nextLanguage;
+          button.classList.toggle('active', active);
+          button.setAttribute('aria-pressed', String(active));
+        });
+
+        try { localStorage.setItem(storageKey, nextLanguage); } catch {}
+      };
+
+      document.querySelectorAll('.lang-button').forEach((button) => {
+        button.addEventListener('click', () => setLanguage(button.dataset.lang));
+      });
+
+      let initialLanguage = 'zh';
+      try { initialLanguage = localStorage.getItem(storageKey) || 'zh'; } catch {}
+      setLanguage(initialLanguage);
+    })();
+  </script>
+</body>
+</html>

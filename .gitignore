@@ -1,0 +1,8 @@
+bin/
+obj/
+*.tmod
+*.log
+.vs/
+.idea/
+*.user
+*.suo
