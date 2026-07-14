@@ -16,7 +16,7 @@ namespace TerraChat
 		public override void Load()
 		{
 			serverClockOffsetTicks = System.DateTime.Now.Ticks - System.DateTime.UtcNow.Ticks;
-			ToggleChatKeybind = KeybindLoader.RegisterKeybind(this, "ToggleChatUI", Keys.C);
+			ToggleChatKeybind = KeybindLoader.RegisterKeybind(this, "ToggleChatUI", Keys.J);
 		}
 
 		public override void Unload()
