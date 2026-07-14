@@ -22,6 +22,8 @@ namespace TerraChat.Common
 	internal sealed class TerraChatUISystem : ModSystem
 	{
 		private static TerraChatUISystem instance;
+		private static On_Main.orig_DrawInterface_36_Cursor deferredCursorDraw;
+		private static bool deferCursorDraw;
 		private UserInterface userInterface;
 		private TerraChatPanelState panelState;
 
@@ -50,15 +52,21 @@ namespace TerraChat.Common
 			panelState = new TerraChatPanelState(this);
 			panelState.Activate();
 			TextInputEXT.TextInput += HandleTextInput;
+			On_Main.DrawInterface += DrawInterfaceAfterVanilla;
+			On_Main.DrawInterface_36_Cursor += DeferCursorUntilAfterTerraChat;
 		}
 
 		public override void Unload()
 		{
+			On_Main.DrawInterface_36_Cursor -= DeferCursorUntilAfterTerraChat;
+			On_Main.DrawInterface -= DrawInterfaceAfterVanilla;
 			TextInputEXT.TextInput -= HandleTextInput;
 			panelState?.Dispose();
 			panelState = null;
 			userInterface = null;
 			instance = null;
+			deferredCursorDraw = null;
+			deferCursorDraw = false;
 		}
 
 		public override void UpdateUI(GameTime gameTime)
@@ -100,25 +108,56 @@ namespace TerraChat.Common
 			}
 		}
 
-		public override void ModifyInterfaceLayers(List<GameInterfaceLayer> layers)
+		private static void DrawInterfaceAfterVanilla(On_Main.orig_DrawInterface original, Main self, GameTime gameTime)
 		{
-			int mouseTextIndex = layers.FindIndex(layer => layer.Name == "Vanilla: Mouse Text");
-			if (mouseTextIndex < 0)
+			UserInterface activeInterface = instance?.userInterface;
+			bool drawTerraChat = activeInterface?.CurrentState != null;
+			deferredCursorDraw = null;
+			deferCursorDraw = drawTerraChat;
+			try
 			{
-				mouseTextIndex = layers.Count;
+				original(self, gameTime);
+			}
+			finally
+			{
+				deferCursorDraw = false;
 			}
 
-			layers.Insert(mouseTextIndex, new LegacyGameInterfaceLayer(
-				"TerraChat: Chat History",
-				() =>
+			if (!drawTerraChat)
+			{
+				deferredCursorDraw = null;
+				return;
+			}
+
+			bool batchStarted = false;
+			PlayerInput.SetZoom_UI();
+			try
+			{
+				Main.spriteBatch.Begin(SpriteSortMode.Deferred, BlendState.AlphaBlend, null, null, null, null, Main.UIScaleMatrix);
+				batchStarted = true;
+				activeInterface.Draw(Main.spriteBatch, gameTime);
+				deferredCursorDraw?.Invoke();
+			}
+			finally
+			{
+				if (batchStarted)
 				{
-					if (userInterface?.CurrentState != null)
-					{
-						userInterface.Draw(Main.spriteBatch, new GameTime());
-					}
-					return true;
-				},
-				InterfaceScaleType.UI));
+					Main.spriteBatch.End();
+				}
+				PlayerInput.SetZoom_World();
+				deferredCursorDraw = null;
+			}
+		}
+
+		private static void DeferCursorUntilAfterTerraChat(On_Main.orig_DrawInterface_36_Cursor original)
+		{
+			if (deferCursorDraw)
+			{
+				deferredCursorDraw = original;
+				return;
+			}
+
+			original();
 		}
 
 		internal void Close()
@@ -165,9 +204,12 @@ namespace TerraChat.Common
 		private readonly Dictionary<ChatEntry, CachedMessageLayout> messageLayoutCache = new();
 		private readonly List<AvatarHitTarget> visibleAvatarTargets = new();
 		private readonly List<MessageHitTarget> visibleMessageTargets = new();
+		private readonly List<HistoryBubbleLayout> historySelectionLayouts = new();
 		private Rectangle panelRectangle;
 		private Rectangle historyRectangle;
 		private Rectangle inputRectangle;
+		private Rectangle inputScrollTrackRectangle;
+		private Rectangle inputScrollThumbRectangle;
 		private Rectangle sendButtonRectangle;
 		private Rectangle closeButtonRectangle;
 		private Rectangle clearHistoryButtonRectangle;
@@ -209,11 +251,18 @@ namespace TerraChat.Common
 		private Keys navigationRepeatKey;
 		private int navigationHeldFrames;
 		private int navigationRepeatFrames;
+		private float verticalNavigationHorizontalPosition = -1f;
 		private ulong caretForceVisibleUntilTick;
 		private bool clearHistoryConfirmationOpen;
 		private bool revealInputCursor;
 		private int inputFirstVisibleLine;
+		private bool inputScrollDragging;
+		private int inputScrollDragStartY;
+		private int inputScrollDragStartLine;
 		private bool inputMouseSelecting;
+		private bool historyMouseSelecting;
+		private HistorySelectionPoint historySelectionAnchor = HistorySelectionPoint.Empty;
+		private HistorySelectionPoint historySelectionActive = HistorySelectionPoint.Empty;
 		private float scrollPixels;
 		private float targetScrollPixels;
 		private float maximumScrollPixels;
@@ -252,6 +301,8 @@ namespace TerraChat.Common
 			scrollDragging = false;
 			InputFocused = false;
 			inputMouseSelecting = false;
+			ClearHistorySelection();
+			inputScrollDragging = false;
 			MoveCursor(inputText.Length, false);
 			ResetBackspaceRepeatState();
 			ResetNavigationRepeatState();
@@ -268,6 +319,8 @@ namespace TerraChat.Common
 			InputFocused = false;
 			profileCardOpen = false;
 			clearHistoryConfirmationOpen = false;
+			ClearHistorySelection();
+			inputScrollDragging = false;
 			CloseCropDialog();
 		}
 
@@ -313,8 +366,13 @@ namespace TerraChat.Common
 
 			if (!InputFocused)
 			{
+				KeyboardState outputKeyState = Main.keyState;
+				if (IsControlDown(outputKeyState) && IsNewKeyPress(outputKeyState, Keys.C))
+				{
+					CopyHistorySelectionToClipboard();
+				}
 				queuedTextInput.Clear();
-				lastCaptureKeyState = Main.keyState;
+				lastCaptureKeyState = outputKeyState;
 				ResetBackspaceRepeatState();
 				ResetNavigationRepeatState();
 				return;
@@ -487,8 +545,22 @@ namespace TerraChat.Common
 				MoveCursor(controlDown ? FindNextWordBoundary(inputCursorIndex) : GetNextTextElementStart(inputCursorIndex), shiftDown);
 				moved = true;
 			}
+			else if (ShouldApplyNavigationKey(keyState, Keys.Up))
+			{
+				MoveCursorVertically(-1, shiftDown);
+				moved = true;
+			}
+			else if (ShouldApplyNavigationKey(keyState, Keys.Down))
+			{
+				MoveCursorVertically(1, shiftDown);
+				moved = true;
+			}
 
-			if (!moved && !keyState.IsKeyDown(Keys.Left) && !keyState.IsKeyDown(Keys.Right))
+			if (!moved
+				&& !keyState.IsKeyDown(Keys.Left)
+				&& !keyState.IsKeyDown(Keys.Right)
+				&& !keyState.IsKeyDown(Keys.Up)
+				&& !keyState.IsKeyDown(Keys.Down))
 			{
 				ResetNavigationRepeatState();
 			}
@@ -504,6 +576,26 @@ namespace TerraChat.Common
 				ResetNavigationRepeatState();
 				MoveCursor(inputText.Length, shiftDown);
 			}
+		}
+
+		private void MoveCursorVertically(int direction, bool selecting)
+		{
+			Rectangle textArea = GetTextArea();
+			float scale = GetActiveInputTextScale();
+			List<EditableTextLine> lines = WrapEditableText(inputText ?? string.Empty, textArea, scale);
+			int currentLineIndex = FindEditableLineIndex(lines, inputCursorIndex);
+			int targetLineIndex = Math.Min(Math.Max(currentLineIndex + direction, 0), lines.Count - 1);
+			if (targetLineIndex == currentLineIndex)
+			{
+				return;
+			}
+
+			float horizontalPosition = verticalNavigationHorizontalPosition >= 0f
+				? verticalNavigationHorizontalPosition
+				: MeasureEditablePrefix(lines[currentLineIndex], inputCursorIndex);
+			EditableTextLine targetLine = lines[targetLineIndex];
+			MoveCursor(FindEditableIndexAtPosition(targetLine, horizontalPosition), selecting);
+			verticalNavigationHorizontalPosition = horizontalPosition;
 		}
 
 		private static bool IsControlDown(KeyboardState keyState)
@@ -593,6 +685,7 @@ namespace TerraChat.Common
 			navigationRepeatKey = Keys.None;
 			navigationHeldFrames = 0;
 			navigationRepeatFrames = 0;
+			verticalNavigationHorizontalPosition = -1f;
 		}
 
 		private void InsertTextAtCursor(string text)
@@ -659,6 +752,7 @@ namespace TerraChat.Common
 
 		private void MoveCursor(int index, bool selecting)
 		{
+			verticalNavigationHorizontalPosition = -1f;
 			inputCursorIndex = ClampTextIndex(index);
 			if (!selecting)
 			{
@@ -670,6 +764,7 @@ namespace TerraChat.Common
 
 		private void SelectAllText()
 		{
+			verticalNavigationHorizontalPosition = -1f;
 			selectionAnchorIndex = 0;
 			inputCursorIndex = inputText.Length;
 			caretForceVisibleUntilTick = Main.GameUpdateCount + CaretForceVisibleFrames;
@@ -708,6 +803,87 @@ namespace TerraChat.Common
 			{
 				SetClipboardText(selectedText);
 			}
+		}
+
+		private void CopyHistorySelectionToClipboard()
+		{
+			if (!TryGetOrderedHistorySelection(out HistorySelectionPoint start, out HistorySelectionPoint end))
+			{
+				return;
+			}
+
+			List<ChatEntry> messages = Main.LocalPlayer.GetModPlayer<TerraChatPlayer>().History;
+			if (start.MessageIndex < 0 || end.MessageIndex >= messages.Count)
+			{
+				ClearHistorySelection();
+				return;
+			}
+
+			StringBuilder selectedText = new();
+			for (int messageIndex = start.MessageIndex; messageIndex <= end.MessageIndex; messageIndex++)
+			{
+				string text = messages[messageIndex].Text ?? string.Empty;
+				int selectionStart = messageIndex == start.MessageIndex ? Math.Min(start.CharacterIndex, text.Length) : 0;
+				int selectionEnd = messageIndex == end.MessageIndex ? Math.Min(end.CharacterIndex, text.Length) : text.Length;
+				if (selectionEnd > selectionStart)
+				{
+					selectedText.Append(text, selectionStart, selectionEnd - selectionStart);
+				}
+				if (messageIndex < end.MessageIndex)
+				{
+					selectedText.AppendLine();
+				}
+			}
+
+			if (selectedText.Length > 0)
+			{
+				SetClipboardText(selectedText.ToString());
+			}
+		}
+
+		private bool TryGetHistorySelectionRange(int messageIndex, int textLength, out int start, out int end)
+		{
+			if (!TryGetOrderedHistorySelection(out HistorySelectionPoint selectionStart, out HistorySelectionPoint selectionEnd)
+				|| messageIndex < selectionStart.MessageIndex
+				|| messageIndex > selectionEnd.MessageIndex)
+			{
+				start = 0;
+				end = 0;
+				return false;
+			}
+
+			start = messageIndex == selectionStart.MessageIndex ? Math.Min(selectionStart.CharacterIndex, textLength) : 0;
+			end = messageIndex == selectionEnd.MessageIndex ? Math.Min(selectionEnd.CharacterIndex, textLength) : textLength;
+			return end > start;
+		}
+
+		private bool TryGetOrderedHistorySelection(out HistorySelectionPoint start, out HistorySelectionPoint end)
+		{
+			if (historySelectionAnchor.MessageIndex < 0 || historySelectionActive.MessageIndex < 0 || historySelectionAnchor.Equals(historySelectionActive))
+			{
+				start = HistorySelectionPoint.Empty;
+				end = HistorySelectionPoint.Empty;
+				return false;
+			}
+
+			if (historySelectionAnchor.CompareTo(historySelectionActive) <= 0)
+			{
+				start = historySelectionAnchor;
+				end = historySelectionActive;
+			}
+			else
+			{
+				start = historySelectionActive;
+				end = historySelectionAnchor;
+			}
+			return true;
+		}
+
+		private void ClearHistorySelection()
+		{
+			historyMouseSelecting = false;
+			historySelectionAnchor = HistorySelectionPoint.Empty;
+			historySelectionActive = HistorySelectionPoint.Empty;
 		}
 
 		private void CutSelectionToClipboard()
@@ -868,8 +1044,12 @@ namespace TerraChat.Common
 				return;
 			}
 
+			UpdateInputScrollBarLayout();
+			HandleInputScroll(mouse);
+			HandleInputScrollBar(mouse);
 			HandleScroll(mouse);
 			HandleScrollBar(mouse);
+			HandleHistoryMouseSelection(mouse);
 			HandleInputMouseSelection(mouse);
 			UpdateSmoothScroll();
 		}
@@ -1052,6 +1232,7 @@ namespace TerraChat.Common
 			}
 
 			DrawEditableText(spriteBatch, inputText, textArea, Color.White, 0.9f);
+			DrawInputScrollBar(spriteBatch, TextInputTarget.Chat);
 		}
 
 		private void DrawProfileCard(SpriteBatch spriteBatch)
@@ -1130,6 +1311,7 @@ namespace TerraChat.Common
 			if (active)
 			{
 				DrawEditableText(spriteBatch, inputText, area, Color.White, 0.86f);
+				DrawInputScrollBar(spriteBatch, target);
 				return;
 			}
 
@@ -1147,9 +1329,14 @@ namespace TerraChat.Common
 		{
 			visibleAvatarTargets.Clear();
 			visibleMessageTargets.Clear();
+			historySelectionLayouts.Clear();
 			TerraChatPlayer chatPlayer = Main.LocalPlayer.GetModPlayer<TerraChatPlayer>();
 			List<ChatEntry> messages = chatPlayer.History;
 			RemoveStaleMessageLayouts(messages);
+			if (historySelectionAnchor.MessageIndex >= messages.Count || historySelectionActive.MessageIndex >= messages.Count)
+			{
+				ClearHistorySelection();
+			}
 			if (messages.Count == 0)
 			{
 				maximumScrollPixels = 0f;
@@ -1167,11 +1354,12 @@ namespace TerraChat.Common
 			int maximumBubbleWidth = Math.Max(150, (int)(area.Width * 0.62f));
 			List<HistoryBubbleLayout> layouts = new(messages.Count);
 			float y = area.Y;
-			foreach (ChatEntry message in messages)
+			for (int messageIndex = 0; messageIndex < messages.Count; messageIndex++)
 			{
+				ChatEntry message = messages[messageIndex];
 				int playerId = ResolvePlayerId(message);
 				string displayName = GetPlayerDisplayName(playerId, message.Sender);
-				HistoryBubbleLayout layout = CreateHistoryBubbleLayout(message, playerId, displayName, area, y, scale, iconSize, iconGap, bubblePadding, maximumBubbleWidth);
+				HistoryBubbleLayout layout = CreateHistoryBubbleLayout(messageIndex, message, playerId, displayName, area, y, scale, iconSize, iconGap, bubblePadding, maximumBubbleWidth);
 				layouts.Add(layout);
 				y += layout.Bounds.Height + messageGap;
 			}
@@ -1197,6 +1385,7 @@ namespace TerraChat.Common
 			foreach (HistoryBubbleLayout originalLayout in layouts)
 			{
 				HistoryBubbleLayout layout = originalLayout.Offset(scrollPixels);
+				historySelectionLayouts.Add(layout);
 				if (layout.Bounds.Bottom >= area.Y && layout.Bounds.Y <= area.Bottom)
 				{
 					if (layout.PlayerId >= 0)
@@ -1231,6 +1420,7 @@ namespace TerraChat.Common
 		}
 
 		private HistoryBubbleLayout CreateHistoryBubbleLayout(
+			int messageIndex,
 			ChatEntry message,
 			int playerId,
 			string displayName,
@@ -1259,7 +1449,7 @@ namespace TerraChat.Common
 
 			Rectangle rowBounds = Rectangle.Union(iconRectangle, bubbleRectangle);
 			Rectangle bounds = new(rowBounds.X, (int)y, rowBounds.Width, rowBounds.Height + nameAreaHeight);
-			return new HistoryBubbleLayout(message, playerId, displayName, iconRectangle, bubbleRectangle, bounds, cachedLayout.Lines, cachedLayout.LineCount);
+			return new HistoryBubbleLayout(messageIndex, message, playerId, displayName, iconRectangle, bubbleRectangle, bounds, cachedLayout.Lines, cachedLayout.SelectableLines, cachedLayout.LineCount);
 		}
 
 		private CachedMessageLayout GetCachedMessageLayout(ChatEntry message, float scale, int iconSize, int bubblePadding, int maximumBubbleWidth)
@@ -1271,6 +1461,7 @@ namespace TerraChat.Common
 
 			int wrapWidth = (int)((maximumBubbleWidth - bubblePadding * 2) / scale);
 			string[] lines = Utils.WordwrapString(message.Text, FontAssets.MouseText.Value, wrapWidth, MaximumWrappedLines, out int lineCount);
+			List<EditableTextLine> selectableLines = CreateSelectableHistoryLines(message.Text, lines, lineCount);
 			float maximumLineWidth = 0f;
 			for (int index = 0; index < lineCount && index < lines.Length; index++)
 			{
@@ -1284,7 +1475,7 @@ namespace TerraChat.Common
 			float timeWidth = FontAssets.MouseText.Value.MeasureString(message.Time).X * timeScale;
 			int bubbleWidth = Math.Min(maximumBubbleWidth, Math.Max(72, (int)Math.Ceiling(Math.Max(maximumLineWidth, timeWidth) + bubblePadding * 2)));
 			int bubbleHeight = Math.Max(iconSize, (int)Math.Ceiling(Math.Max(1, lineCount) * FontAssets.MouseText.Value.LineSpacing * scale + bubblePadding * 2 + 14));
-			cachedLayout = new CachedMessageLayout(maximumBubbleWidth, lines, lineCount, bubbleWidth, bubbleHeight);
+			cachedLayout = new CachedMessageLayout(maximumBubbleWidth, lines, selectableLines, lineCount, bubbleWidth, bubbleHeight);
 			messageLayoutCache[message] = cachedLayout;
 			return cachedLayout;
 		}
@@ -1352,11 +1543,26 @@ namespace TerraChat.Common
 					continue;
 				}
 
+				float lineY = layout.BubbleRectangle.Y + bubblePadding + index * lineHeight;
+				if (index < layout.SelectableLines.Count && TryGetHistorySelectionRange(layout.MessageIndex, layout.Message.Text.Length, out int selectionStart, out int selectionEnd))
+				{
+					DrawEditableSelection(
+						spriteBatch,
+						TextureAssets.MagicPixel.Value,
+						layout.SelectableLines[index],
+						layout.BubbleRectangle.X + bubblePadding,
+						lineY,
+						lineHeight,
+						scale,
+						selectionStart,
+						selectionEnd);
+				}
+
 				ChatManager.DrawColorCodedStringWithShadow(
 					spriteBatch,
 					FontAssets.MouseText.Value,
 					layout.Lines[index],
-					new Vector2(layout.BubbleRectangle.X + bubblePadding, layout.BubbleRectangle.Y + bubblePadding + index * lineHeight),
+					new Vector2(layout.BubbleRectangle.X + bubblePadding, lineY),
 					Color.White,
 					0f,
 					Vector2.Zero,
@@ -1377,6 +1583,36 @@ namespace TerraChat.Common
 				0f,
 				Vector2.Zero,
 				new Vector2(timeScale));
+		}
+
+		private static List<EditableTextLine> CreateSelectableHistoryLines(string text, string[] wrappedLines, int lineCount)
+		{
+			text ??= string.Empty;
+			List<EditableTextLine> lines = new();
+			int sourceIndex = 0;
+			for (int index = 0; index < lineCount && index < wrappedLines.Length; index++)
+			{
+				string lineText = wrappedLines[index] ?? string.Empty;
+				int lineStart = sourceIndex;
+				if (lineText.Length > 0)
+				{
+					int matchIndex = text.IndexOf(lineText, sourceIndex, StringComparison.Ordinal);
+					if (matchIndex >= 0)
+					{
+						lineStart = matchIndex;
+					}
+				}
+
+				int lineEnd = Math.Min(text.Length, lineStart + lineText.Length);
+				lines.Add(new EditableTextLine(lineText, lineStart, lineEnd));
+				sourceIndex = lineEnd;
+				while (sourceIndex < text.Length && (text[sourceIndex] == '\r' || text[sourceIndex] == '\n'))
+				{
+					sourceIndex++;
+				}
+			}
+
+			return lines;
 		}
 
 		private static MessageHitTarget CreateMessageHitTarget(HistoryBubbleLayout layout)
@@ -1415,6 +1651,128 @@ namespace TerraChat.Common
 				0f,
 				textSize * 0.5f,
 				new Vector2(textScale));
+		}
+
+		private void UpdateInputScrollBarLayout()
+		{
+			int maximumFirstVisibleLine = GetMaximumInputFirstVisibleLine(out int lineCount, out int visibleLineCount);
+			if (maximumFirstVisibleLine <= 0)
+			{
+				inputFirstVisibleLine = 0;
+				inputScrollTrackRectangle = Rectangle.Empty;
+				inputScrollThumbRectangle = Rectangle.Empty;
+				return;
+			}
+
+			inputFirstVisibleLine = Math.Min(Math.Max(inputFirstVisibleLine, 0), maximumFirstVisibleLine);
+			Rectangle inputBox = GetActiveInputRectangle();
+			inputScrollTrackRectangle = new Rectangle(inputBox.Right - 10, inputBox.Y + 8, ScrollBarTrackWidth, inputBox.Height - 16);
+			int thumbHeight = Math.Max(18, inputScrollTrackRectangle.Height * visibleLineCount / lineCount);
+			int travel = Math.Max(1, inputScrollTrackRectangle.Height - thumbHeight);
+			int thumbY = inputScrollTrackRectangle.Y + travel * inputFirstVisibleLine / maximumFirstVisibleLine;
+			inputScrollThumbRectangle = new Rectangle(inputScrollTrackRectangle.Center.X - ScrollBarThumbWidth / 2, thumbY, ScrollBarThumbWidth, thumbHeight);
+		}
+
+		private void DrawInputScrollBar(SpriteBatch spriteBatch, TextInputTarget target)
+		{
+			if (inputTarget != target)
+			{
+				return;
+			}
+
+			UpdateInputScrollBarLayout();
+			if (inputScrollTrackRectangle == Rectangle.Empty)
+			{
+				return;
+			}
+
+			bool hovered = GetInputScrollHitRectangle().Contains(new Point(Main.mouseX, Main.mouseY));
+			Texture2D pixel = TextureAssets.MagicPixel.Value;
+			spriteBatch.Draw(pixel, inputScrollTrackRectangle, hovered || inputScrollDragging ? new Color(104, 124, 154) * 0.78f : new Color(54, 66, 88) * 0.58f);
+			spriteBatch.Draw(pixel, inputScrollThumbRectangle, inputScrollDragging ? new Color(210, 218, 214) : hovered ? new Color(176, 196, 202) : new Color(126, 146, 156));
+		}
+
+		private void HandleInputScroll(Point mouse)
+		{
+			int wheelDelta = PlayerInput.ScrollWheelDeltaForUI;
+			int maximumFirstVisibleLine = GetMaximumInputFirstVisibleLine(out _, out _);
+			if (wheelDelta == 0 || maximumFirstVisibleLine <= 0 || !GetActiveInputRectangle().Contains(mouse))
+			{
+				return;
+			}
+
+			int wheelNotches = Math.Max(1, Math.Abs(wheelDelta) / 120);
+			inputFirstVisibleLine = Math.Min(
+				Math.Max(inputFirstVisibleLine - Math.Sign(wheelDelta) * wheelNotches * 2, 0),
+				maximumFirstVisibleLine);
+			revealInputCursor = false;
+			PlayerInput.ScrollWheelDelta = 0;
+			PlayerInput.ScrollWheelDeltaForUI = 0;
+		}
+
+		private void HandleInputScrollBar(Point mouse)
+		{
+			int maximumFirstVisibleLine = GetMaximumInputFirstVisibleLine(out _, out _);
+			if (maximumFirstVisibleLine <= 0 || inputScrollTrackRectangle == Rectangle.Empty)
+			{
+				inputScrollDragging = false;
+				return;
+			}
+
+			if (!inputScrollDragging)
+			{
+				Rectangle hitRectangle = GetInputScrollHitRectangle();
+				bool leftPressed = Main.mouseLeft && (Main.mouseLeftRelease || hitRectangle.Contains(mouse));
+				if (!hitRectangle.Contains(mouse) || !leftPressed)
+				{
+					return;
+				}
+
+				inputScrollDragging = true;
+				if (!inputScrollThumbRectangle.Contains(mouse))
+				{
+					inputFirstVisibleLine = GetInputScrollLineFromTrack(mouse.Y, maximumFirstVisibleLine);
+				}
+				inputScrollDragStartY = mouse.Y;
+				inputScrollDragStartLine = inputFirstVisibleLine;
+				revealInputCursor = false;
+				Main.mouseLeftRelease = false;
+			}
+
+			if (!Main.mouseLeft)
+			{
+				inputScrollDragging = false;
+				return;
+			}
+
+			int travel = Math.Max(1, inputScrollTrackRectangle.Height - inputScrollThumbRectangle.Height);
+			inputFirstVisibleLine = Math.Min(
+				Math.Max(inputScrollDragStartLine + (int)Math.Round((mouse.Y - inputScrollDragStartY) * maximumFirstVisibleLine / (float)travel), 0),
+				maximumFirstVisibleLine);
+			revealInputCursor = false;
+		}
+
+		private int GetInputScrollLineFromTrack(int mouseY, int maximumFirstVisibleLine)
+		{
+			int travel = Math.Max(1, inputScrollTrackRectangle.Height - inputScrollThumbRectangle.Height);
+			float ratio = (mouseY - inputScrollTrackRectangle.Y - inputScrollThumbRectangle.Height / 2f) / travel;
+			return Math.Min(Math.Max((int)Math.Round(ratio * maximumFirstVisibleLine), 0), maximumFirstVisibleLine);
+		}
+
+		private int GetMaximumInputFirstVisibleLine(out int lineCount, out int visibleLineCount)
+		{
+			if (inputTarget == TextInputTarget.None)
+			{
+				lineCount = 0;
+				visibleLineCount = 0;
+				return 0;
+			}
+
+			Rectangle textArea = GetTextArea();
+			float scale = GetActiveInputTextScale();
+			lineCount = WrapEditableText(inputText ?? string.Empty, textArea, scale).Count;
+			visibleLineCount = Math.Max(1, (int)(textArea.Height / (FontAssets.MouseText.Value.LineSpacing * scale)));
+			return Math.Max(0, lineCount - visibleLineCount);
 		}
 
 		private void DrawScrollBar(SpriteBatch spriteBatch)
@@ -1825,12 +2183,16 @@ namespace TerraChat.Common
 
 			if (!panelRectangle.Contains(mouse))
 			{
-				if (InputFocused && Main.mouseLeft && Main.mouseLeftRelease)
+				if (Main.mouseLeft && Main.mouseLeftRelease)
 				{
 					Main.mouseLeftRelease = false;
-					InputFocused = false;
-					inputMouseSelecting = false;
-					MoveCursor(inputCursorIndex, false);
+					ClearHistorySelection();
+					if (InputFocused)
+					{
+						InputFocused = false;
+						inputMouseSelecting = false;
+						MoveCursor(inputCursorIndex, false);
+					}
 				}
 				return;
 			}
@@ -1841,7 +2203,13 @@ namespace TerraChat.Common
 				return;
 			}
 
+			if (TryBeginHistoryMouseSelection(mouse))
+			{
+				return;
+			}
+
 			Main.mouseLeftRelease = false;
+			ClearHistorySelection();
 			if (clearHistoryButtonRectangle.Contains(mouse))
 			{
 				OpenClearHistoryConfirmation();
@@ -1905,6 +2273,98 @@ namespace TerraChat.Common
 				inputMouseSelecting = false;
 				MoveCursor(inputCursorIndex, false);
 			}
+		}
+
+		private void HandleHistoryMouseSelection(Point mouse)
+		{
+			if (historyMouseSelecting)
+			{
+				if (!Main.mouseLeft)
+				{
+					historyMouseSelecting = false;
+					return;
+				}
+
+				if (TryGetHistorySelectionPoint(mouse, true, out HistorySelectionPoint activePoint))
+				{
+					historySelectionActive = activePoint;
+				}
+				Main.LocalPlayer.mouseInterface = true;
+				return;
+			}
+
+			if (!Main.mouseLeft || !Main.mouseLeftRelease)
+			{
+				return;
+			}
+
+			TryBeginHistoryMouseSelection(mouse);
+		}
+
+		private bool TryBeginHistoryMouseSelection(Point mouse)
+		{
+			if (!GetHistoryArea().Contains(mouse) || GetScrollHitRectangle().Contains(mouse))
+			{
+				return false;
+			}
+
+			if (!TryGetHistorySelectionPoint(mouse, false, out HistorySelectionPoint startPoint))
+			{
+				return false;
+			}
+
+			InputFocused = false;
+			inputMouseSelecting = false;
+			historyMouseSelecting = true;
+			historySelectionAnchor = startPoint;
+			historySelectionActive = startPoint;
+			Main.mouseLeftRelease = false;
+			Main.clrInput();
+			return true;
+		}
+
+		private bool TryGetHistorySelectionPoint(Point mouse, bool allowNearest, out HistorySelectionPoint point)
+		{
+			HistoryBubbleLayout target = null;
+			foreach (HistoryBubbleLayout layout in historySelectionLayouts)
+			{
+				if (layout.BubbleRectangle.Contains(mouse))
+				{
+					target = layout;
+					break;
+				}
+			}
+
+			if (target == null && allowNearest && historySelectionLayouts.Count > 0)
+			{
+				int bestDistance = int.MaxValue;
+				foreach (HistoryBubbleLayout layout in historySelectionLayouts)
+				{
+					int distance = mouse.Y < layout.BubbleRectangle.Y
+						? layout.BubbleRectangle.Y - mouse.Y
+						: Math.Max(0, mouse.Y - layout.BubbleRectangle.Bottom);
+					if (distance < bestDistance)
+					{
+						bestDistance = distance;
+						target = layout;
+					}
+				}
+			}
+
+			if (target == null || target.SelectableLines.Count == 0)
+			{
+				point = HistorySelectionPoint.Empty;
+				return false;
+			}
+
+			const float scale = 0.85f;
+			const int bubblePadding = 10;
+			float lineHeight = FontAssets.MouseText.Value.LineSpacing * scale;
+			int lineIndex = Math.Min(Math.Max((int)((mouse.Y - target.BubbleRectangle.Y - bubblePadding) / lineHeight), 0), target.SelectableLines.Count - 1);
+			EditableTextLine line = target.SelectableLines[lineIndex];
+			float horizontalPosition = (mouse.X - target.BubbleRectangle.X - bubblePadding) / scale;
+			point = new HistorySelectionPoint(target.MessageIndex, FindEditableIndexAtPosition(line, horizontalPosition));
+			return true;
 		}
 
 		private void HandleInputMouseSelection(Point mouse)
@@ -2044,6 +2504,7 @@ namespace TerraChat.Common
 			inputText = chatInputDraft;
 			InputFocused = false;
 			inputMouseSelecting = false;
+			inputScrollDragging = false;
 			inputFirstVisibleLine = 0;
 			MoveCursor(inputText.Length, false);
 		}
@@ -2061,6 +2522,7 @@ namespace TerraChat.Common
 			};
 			InputFocused = target != TextInputTarget.None;
 			inputMouseSelecting = false;
+			inputScrollDragging = false;
 			inputFirstVisibleLine = 0;
 			MoveCursor(inputText.Length, false);
 			lastCaptureKeyState = Main.keyState;
@@ -2354,10 +2816,15 @@ namespace TerraChat.Common
 			};
 		}
 
+		private float GetActiveInputTextScale()
+		{
+			return inputTarget == TextInputTarget.Chat ? 0.9f : 0.86f;
+		}
+
 		private int GetCursorIndexFromMouse(Point mouse)
 		{
 			Rectangle textArea = GetTextArea();
-			const float scale = 0.9f;
+			float scale = GetActiveInputTextScale();
 			List<EditableTextLine> lines = WrapEditableText(inputText ?? string.Empty, textArea, scale);
 			if (lines.Count == 0)
 			{
@@ -2373,15 +2840,25 @@ namespace TerraChat.Common
 				return line.StartIndex;
 			}
 
-			float relativeX = Math.Max(0f, mouse.X - textArea.X);
+			float relativeX = Math.Max(0f, mouse.X - textArea.X) / scale;
+			return FindEditableIndexAtPosition(line, relativeX);
+		}
+
+		private static int FindEditableIndexAtPosition(EditableTextLine line, float horizontalPosition)
+		{
+			if (string.IsNullOrEmpty(line.Text))
+			{
+				return line.StartIndex;
+			}
+
 			int[] indexes = StringInfo.ParseCombiningCharacters(line.Text);
 			for (int index = 0; index < indexes.Length; index++)
 			{
 				int elementStart = indexes[index];
 				int elementEnd = index + 1 < indexes.Length ? indexes[index + 1] : line.Text.Length;
-				float startWidth = elementStart <= 0 ? 0f : FontAssets.MouseText.Value.MeasureString(line.Text.Substring(0, elementStart)).X * scale;
-				float endWidth = FontAssets.MouseText.Value.MeasureString(line.Text.Substring(0, elementEnd)).X * scale;
-				if (relativeX < (startWidth + endWidth) * 0.5f)
+				float startWidth = elementStart <= 0 ? 0f : FontAssets.MouseText.Value.MeasureString(line.Text.Substring(0, elementStart)).X;
+				float endWidth = FontAssets.MouseText.Value.MeasureString(line.Text.Substring(0, elementEnd)).X;
+				if (horizontalPosition < (startWidth + endWidth) * 0.5f)
 				{
 					return line.StartIndex + elementStart;
 				}
@@ -2410,14 +2887,16 @@ namespace TerraChat.Common
 				}
 			}
 			inputFirstVisibleLine = Math.Min(Math.Max(inputFirstVisibleLine, 0), Math.Max(0, lines.Count - visibleLineCount));
-			for (int index = inputFirstVisibleLine; index < lines.Count; index++)
+			GraphicsDevice graphicsDevice = spriteBatch.GraphicsDevice;
+			Rectangle oldScissorRectangle = graphicsDevice.ScissorRectangle;
+			spriteBatch.End();
+			graphicsDevice.ScissorRectangle = GetScaledScissorRectangle(area);
+			spriteBatch.Begin(SpriteSortMode.Deferred, BlendState.AlphaBlend, null, null, ScissorRasterizerState, null, Main.UIScaleMatrix);
+
+			int lastVisibleLine = Math.Min(lines.Count, inputFirstVisibleLine + visibleLineCount);
+			for (int index = inputFirstVisibleLine; index < lastVisibleLine; index++)
 			{
 				float y = area.Y + (index - inputFirstVisibleLine) * lineHeight;
-				if (y >= area.Bottom)
-				{
-					break;
-				}
-
 				EditableTextLine line = lines[index];
 				DrawEditableSelection(spriteBatch, pixel, line, area.X, y, lineHeight, scale, selectionStart, selectionEnd);
 				if (!string.IsNullOrEmpty(line.Text))
@@ -2431,6 +2910,10 @@ namespace TerraChat.Common
 					spriteBatch.Draw(pixel, new Rectangle((int)caretX, (int)y, 2, Math.Max(12, (int)lineHeight)), Color.White);
 				}
 			}
+
+			spriteBatch.End();
+			graphicsDevice.ScissorRectangle = oldScissorRectangle;
+			spriteBatch.Begin(SpriteSortMode.Deferred, BlendState.AlphaBlend, null, null, null, null, Main.UIScaleMatrix);
 			revealInputCursor = false;
 		}
 
@@ -2622,6 +3105,15 @@ namespace TerraChat.Common
 			return hitRectangle;
 		}
 
+		private Rectangle GetInputScrollHitRectangle()
+		{
+			Rectangle hitRectangle = inputScrollThumbRectangle == Rectangle.Empty
+				? inputScrollTrackRectangle
+				: Rectangle.Union(inputScrollTrackRectangle, inputScrollThumbRectangle);
+			hitRectangle.Inflate(10, 5);
+			return hitRectangle;
+		}
+
 		private static Rectangle GetScaledScissorRectangle(Rectangle area)
 		{
 			float scale = Main.UIScale;
@@ -2655,6 +3147,30 @@ namespace TerraChat.Common
 			}
 		}
 
+		private readonly struct HistorySelectionPoint : IComparable<HistorySelectionPoint>, IEquatable<HistorySelectionPoint>
+		{
+			internal static HistorySelectionPoint Empty { get; } = new(-1, 0);
+			internal int MessageIndex { get; }
+			internal int CharacterIndex { get; }
+
+			internal HistorySelectionPoint(int messageIndex, int characterIndex)
+			{
+				MessageIndex = messageIndex;
+				CharacterIndex = Math.Max(0, characterIndex);
+			}
+
+			public int CompareTo(HistorySelectionPoint other)
+			{
+				int messageComparison = MessageIndex.CompareTo(other.MessageIndex);
+				return messageComparison != 0 ? messageComparison : CharacterIndex.CompareTo(other.CharacterIndex);
+			}
+
+			public bool Equals(HistorySelectionPoint other)
+			{
+				return MessageIndex == other.MessageIndex && CharacterIndex == other.CharacterIndex;
+			}
+		}
+
 		private readonly struct AvatarHitTarget
 		{
 			internal Rectangle Rectangle { get; }
@@ -2685,14 +3201,16 @@ namespace TerraChat.Common
 		{
 			internal int MaximumBubbleWidth { get; }
 			internal string[] Lines { get; }
+			internal List<EditableTextLine> SelectableLines { get; }
 			internal int LineCount { get; }
 			internal int BubbleWidth { get; }
 			internal int BubbleHeight { get; }
 
-			internal CachedMessageLayout(int maximumBubbleWidth, string[] lines, int lineCount, int bubbleWidth, int bubbleHeight)
+			internal CachedMessageLayout(int maximumBubbleWidth, string[] lines, List<EditableTextLine> selectableLines, int lineCount, int bubbleWidth, int bubbleHeight)
 			{
 				MaximumBubbleWidth = maximumBubbleWidth;
 				Lines = lines;
+				SelectableLines = selectableLines;
 				LineCount = lineCount;
 				BubbleWidth = bubbleWidth;
 				BubbleHeight = bubbleHeight;
@@ -2701,6 +3219,7 @@ namespace TerraChat.Common
 
 		private sealed class HistoryBubbleLayout
 		{
+			internal int MessageIndex { get; }
 			internal ChatEntry Message { get; }
 			internal int PlayerId { get; }
 			internal string DisplayName { get; }
@@ -2708,10 +3227,12 @@ namespace TerraChat.Common
 			internal Rectangle BubbleRectangle { get; }
 			internal Rectangle Bounds { get; }
 			internal string[] Lines { get; }
+			internal List<EditableTextLine> SelectableLines { get; }
 			internal int LineCount { get; }
 
-			internal HistoryBubbleLayout(ChatEntry message, int playerId, string displayName, Rectangle iconRectangle, Rectangle bubbleRectangle, Rectangle bounds, string[] lines, int lineCount)
+			internal HistoryBubbleLayout(int messageIndex, ChatEntry message, int playerId, string displayName, Rectangle iconRectangle, Rectangle bubbleRectangle, Rectangle bounds, string[] lines, List<EditableTextLine> selectableLines, int lineCount)
 			{
+				MessageIndex = messageIndex;
 				Message = message;
 				PlayerId = playerId;
 				DisplayName = displayName;
@@ -2719,12 +3240,14 @@ namespace TerraChat.Common
 				BubbleRectangle = bubbleRectangle;
 				Bounds = bounds;
 				Lines = lines;
+				SelectableLines = selectableLines;
 				LineCount = lineCount;
 			}
 
 			internal HistoryBubbleLayout Offset(float offset)
 			{
 				return new HistoryBubbleLayout(
+					MessageIndex,
 					Message,
 					PlayerId,
 					DisplayName,
@@ -2732,6 +3255,7 @@ namespace TerraChat.Common
 					OffsetRectangle(BubbleRectangle, offset),
 					OffsetRectangle(Bounds, offset),
 					Lines,
+					SelectableLines,
 					LineCount);
 			}
 
